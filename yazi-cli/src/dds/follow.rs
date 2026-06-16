@@ -37,7 +37,7 @@ impl Dds {
 								if let (Some(cwd), Some(cmd)) =
 									(extract_field(&line, "cwd"), extract_field(&line, "cmd"))
 								{
-									println!("\x1e{cwd}\x1f{cmd}");
+									println!("EXEC\t{cwd}\t{cmd}");
 								}
 							}
 							_ => {}
