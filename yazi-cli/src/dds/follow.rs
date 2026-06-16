@@ -11,8 +11,11 @@ use crate::dds::Dds;
 const TIOCSTI: u64 = 0x5412;
 
 impl Dds {
-	/// Subscribe to @cwd and @exec events and inject cd commands into the terminal
-	/// via TIOCSTI, achieving real-time CWD sync and remote exec in the calling shell.
+	/// Subscribe to @cwd and @exec events and inject cd commands into the calling
+	/// terminal via TIOCSTI, achieving real-time CWD sync and remote exec.
+	///
+	/// The process daemonizes: it injects the initial state, then forks to
+	/// background so the shell regains control while monitoring continues.
 	pub(crate) async fn follow() -> Result<()> {
 		async fn connect(kinds: &HashSet<&str>) -> Result<ClientReader> {
 			let (lines, mut writer) = Stream::connect().await?;
@@ -22,11 +25,12 @@ impl Dds {
 			Ok(lines)
 		}
 
-		// Open /dev/tty for TIOCSTI injection (background processes don't have fd 0 as tty)
+		// Open /dev/tty NOW, before forking (child inherits fd but loses
+		// controlling terminal if we call setsid)
 		let tty = std::fs::File::open("/dev/tty").context("Cannot open /dev/tty")?;
 		let tty_fd = tty.as_raw_fd();
 
-		// Ignore SIGTTOU — background processes can't write to terminal otherwise
+		// Ignore SIGTTOU — background processes can't write to terminal
 		unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
 
 		let kinds = HashSet::from_iter(["@cwd", "@exec"]);
@@ -34,30 +38,36 @@ impl Dds {
 		let mut lines =
 			connect(&kinds).await.context("No running Yazi instance found. Start yazi first.")?;
 
+		// Read initial state (replayed @cwd / @exec) and inject immediately
+		while let Ok(Ok(Some(line))) =
+			tokio::time::timeout(std::time::Duration::from_millis(500), lines.next_line()).await
+		{
+			if let Some(cmd) = parse_cmd(&line) {
+				tiocsti_inject(tty_fd, &cmd);
+			}
+		}
+
+		// Fork to background: parent exits so shell regains terminal control
+		unsafe {
+			let pid = libc::fork();
+			if pid < 0 {
+				return Err(anyhow::anyhow!("fork failed"));
+			}
+			if pid != 0 {
+				// Parent: exit immediately, shell is now in control
+				std::process::exit(0);
+			}
+			// Child: continue monitoring
+			libc::setsid();
+		}
+
+		// Drop the tty File but keep the raw fd (child process)
+		// tty is dropped here but we already have tty_fd as raw i32
+
 		loop {
 			match lines.next_line().await? {
 				Some(line) => {
-					let cmd = if let Some(kind) = line.split(',').next() {
-						match kind {
-							"@cwd" => {
-								extract_field(&line, "url").map(|url| format!("cd {url}"))
-							}
-							"@exec" => {
-								if let (Some(cwd), Some(cmd)) =
-									(extract_field(&line, "cwd"), extract_field(&line, "cmd"))
-								{
-									Some(format!("cd {cwd} && {cmd}"))
-								} else {
-									None
-								}
-							}
-							_ => None,
-						}
-					} else {
-						None
-					};
-
-					if let Some(cmd) = cmd {
+					if let Some(cmd) = parse_cmd(&line) {
 						tiocsti_inject(tty_fd, &cmd);
 					}
 				}
@@ -73,6 +83,19 @@ impl Dds {
 				},
 			}
 		}
+	}
+}
+
+fn parse_cmd(line: &str) -> Option<String> {
+	let kind = line.split(',').next()?;
+	match kind {
+		"@cwd" => extract_field(line, "url").map(|url| format!("cd {url}")),
+		"@exec" => {
+			let cwd = extract_field(line, "cwd")?;
+			let cmd = extract_field(line, "cmd")?;
+			Some(format!("cd {cwd} && {cmd}"))
+		}
+		_ => None,
 	}
 }
 
