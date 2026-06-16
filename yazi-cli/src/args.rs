@@ -32,7 +32,9 @@ pub(super) enum Command {
 	PubTo(CommandPubTo),
 	/// Subscribe to messages from all remote instances.
 	Sub(CommandSub),
-	/// Subscribe to CWD changes and output directory paths for shell integration.
+	/// Sync the current shell's working directory with a running Yazi instance
+	/// in real time. When Yazi changes directories, this shell follows automatically.
+	/// Pressing Enter on files in Yazi opens them directly in this terminal.
 	Follow,
 	/// [Hidden] Internal: background worker for follow daemon
 	#[command(hide = true)]
