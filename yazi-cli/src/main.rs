@@ -109,9 +109,24 @@ async fn run() -> anyhow::Result<()> {
 		Command::Follow => {
 			yazi_boot::init_default();
 			yazi_dds::init();
+
+			// Inject initial cd then spawn background daemon for live updates
 			dds::Dds::follow().await?;
 
-			tokio::signal::ctrl_c().await?;
+			// Spawn detached background daemon
+			let exe = std::env::current_exe()?;
+			std::process::Command::new(exe)
+				.arg("follow-watch")
+				.stdin(std::process::Stdio::null())
+				.stdout(std::process::Stdio::null())
+				.stderr(std::process::Stdio::null())
+				.spawn()?;
+		}
+
+		Command::FollowWatch => {
+			yazi_boot::init_default();
+			yazi_dds::init();
+			dds::Dds::follow_watch().await?;
 		}
 
 		Command::Cache(cmd) => {

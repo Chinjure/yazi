@@ -11,8 +11,8 @@ use crate::dds::Dds;
 const TIOCSTI: u64 = 0x5412;
 
 impl Dds {
-	/// Subscribe to @cwd and @exec events and inject cd commands into the calling
-	/// terminal via TIOCSTI, achieving real-time CWD sync and remote exec.
+	/// Connect, inject initial @cwd state via TIOCSTI, then return.
+	/// The caller spawns a follow-watch daemon for live updates.
 	pub(crate) async fn follow() -> Result<()> {
 		async fn connect(kinds: &HashSet<&str>) -> Result<ClientReader> {
 			let (lines, mut writer) = Stream::connect().await?;
@@ -24,34 +24,51 @@ impl Dds {
 
 		let tty = std::fs::File::open("/dev/tty")?;
 		let tty_fd = tty.as_raw_fd();
-
 		unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
 
 		let kinds = HashSet::from_iter(["@cwd", "@exec"]);
+		let mut lines = connect(&kinds)
+			.await
+			.map_err(|_| anyhow::anyhow!("No running Yazi instance found. Start yazi first."))?;
 
-		let mut lines =
-			connect(&kinds).await.map_err(|_| anyhow::anyhow!("No running Yazi instance found. Start yazi first."))?;
-
-		// Read initial replayed state — only @cwd, skip stale @exec
+		// Drain initial replayed state — inject @cwd, skip stale @exec
 		while let Ok(Ok(Some(line))) =
-			tokio::time::timeout(std::time::Duration::from_millis(300), lines.next_line()).await
+			tokio::time::timeout(std::time::Duration::from_millis(200), lines.next_line()).await
 		{
-			if let Some(cmd) = parse_cmd_init(&line) {
-				tiocsti_inject(tty_fd, &cmd);
+			if line.split(',').next() == Some("@cwd") {
+				if let Some(url) = extract_field(&line, "url") {
+					tiocsti_inject(tty_fd, &format!("cd {url}"));
+				}
 			}
 		}
 
-		// Daemonize: fork, parent exits so shell processes injected keystrokes
-		unsafe {
-			match libc::fork() {
-				-1 => return Err(anyhow::anyhow!("fork failed")),
-				0 => {
-					// Child: keep running, close stdin to detach from terminal
-					libc::close(0);
-				}
-				_ => std::process::exit(0),
-			}
+		Ok(())
+	}
+
+	/// Background daemon: subscribe to DDS events and inject commands via
+	/// TIOCSTI for real-time CWD sync and remote exec.
+	pub(crate) async fn follow_watch() -> Result<()> {
+		async fn connect(kinds: &HashSet<&str>) -> Result<ClientReader> {
+			let (lines, mut writer) = Stream::connect().await?;
+			let hi = Payload::new(EmberHi::borrowed(kinds.iter().copied()));
+			writer.write_all(try_format!("{hi}\n")?.as_bytes()).await?;
+			writer.flush().await?;
+			Ok(lines)
 		}
+
+		let tty = std::fs::File::open("/dev/tty")?;
+		let tty_fd = tty.as_raw_fd();
+		unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
+
+		let kinds = HashSet::from_iter(["@cwd", "@exec"]);
+		let mut lines = connect(&kinds)
+			.await
+			.map_err(|_| anyhow::anyhow!("No running Yazi instance found. Start yazi first."))?;
+
+		// Skip initial replayed state (already handled by `follow`)
+		while let Ok(Ok(Some(_))) =
+			tokio::time::timeout(std::time::Duration::from_millis(200), lines.next_line()).await
+		{}
 
 		loop {
 			match lines.next_line().await? {
@@ -75,15 +92,6 @@ impl Dds {
 	}
 }
 
-/// Parse event for initial state replay — only @cwd, skip stale @exec.
-fn parse_cmd_init(line: &str) -> Option<String> {
-	match line.split(',').next()? {
-		"@cwd" => extract_field(line, "url").map(|url| format!("cd {url}")),
-		_ => None,
-	}
-}
-
-/// Parse event for live monitoring — both @cwd and @exec.
 fn parse_cmd(line: &str) -> Option<String> {
 	match line.split(',').next()? {
 		"@cwd" => extract_field(line, "url").map(|url| format!("cd {url}")),

@@ -34,6 +34,9 @@ pub(super) enum Command {
 	Sub(CommandSub),
 	/// Subscribe to CWD changes and output directory paths for shell integration.
 	Follow,
+	/// [Hidden] Internal: background worker for follow daemon
+	#[command(hide = true)]
+	FollowWatch,
 	/// Manage the cache.
 	#[command(subcommand)]
 	Cache(CommandCache),
