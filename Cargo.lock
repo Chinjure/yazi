@@ -5691,6 +5691,7 @@ dependencies = [
  "clap_complete_fig",
  "clap_complete_nushell",
  "hashbrown 0.17.1",
+ "libc",
  "regex",
  "serde",
  "serde_json",
