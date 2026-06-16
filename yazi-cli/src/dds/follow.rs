@@ -1,6 +1,6 @@
 use std::os::fd::AsRawFd;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use hashbrown::HashSet;
 use tokio::io::AsyncWriteExt;
 use yazi_dds::{ClientReader, Payload, Stream, ember::EmberHi};
@@ -13,9 +13,6 @@ const TIOCSTI: u64 = 0x5412;
 impl Dds {
 	/// Subscribe to @cwd and @exec events and inject cd commands into the calling
 	/// terminal via TIOCSTI, achieving real-time CWD sync and remote exec.
-	///
-	/// The process daemonizes: it injects the initial state, then forks to
-	/// background so the shell regains control while monitoring continues.
 	pub(crate) async fn follow() -> Result<()> {
 		async fn connect(kinds: &HashSet<&str>) -> Result<ClientReader> {
 			let (lines, mut writer) = Stream::connect().await?;
@@ -25,44 +22,36 @@ impl Dds {
 			Ok(lines)
 		}
 
-		// Open /dev/tty NOW, before forking (child inherits fd but loses
-		// controlling terminal if we call setsid)
-		let tty = std::fs::File::open("/dev/tty").context("Cannot open /dev/tty")?;
+		let tty = std::fs::File::open("/dev/tty")?;
 		let tty_fd = tty.as_raw_fd();
 
-		// Ignore SIGTTOU — background processes can't write to terminal
 		unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
 
 		let kinds = HashSet::from_iter(["@cwd", "@exec"]);
 
 		let mut lines =
-			connect(&kinds).await.context("No running Yazi instance found. Start yazi first.")?;
+			connect(&kinds).await.map_err(|_| anyhow::anyhow!("No running Yazi instance found. Start yazi first."))?;
 
-		// Read initial state (replayed @cwd / @exec) and inject immediately
+		// Read initial replayed state — only @cwd, skip stale @exec
 		while let Ok(Ok(Some(line))) =
-			tokio::time::timeout(std::time::Duration::from_millis(500), lines.next_line()).await
+			tokio::time::timeout(std::time::Duration::from_millis(300), lines.next_line()).await
 		{
-			if let Some(cmd) = parse_cmd(&line) {
+			if let Some(cmd) = parse_cmd_init(&line) {
 				tiocsti_inject(tty_fd, &cmd);
 			}
 		}
 
-		// Fork to background: parent exits so shell regains terminal control
+		// Daemonize: fork, parent exits so shell processes injected keystrokes
 		unsafe {
-			let pid = libc::fork();
-			if pid < 0 {
-				return Err(anyhow::anyhow!("fork failed"));
+			match libc::fork() {
+				-1 => return Err(anyhow::anyhow!("fork failed")),
+				0 => {
+					// Child: keep running, close stdin to detach from terminal
+					libc::close(0);
+				}
+				_ => std::process::exit(0),
 			}
-			if pid != 0 {
-				// Parent: exit immediately, shell is now in control
-				std::process::exit(0);
-			}
-			// Child: continue monitoring
-			libc::setsid();
 		}
-
-		// Drop the tty File but keep the raw fd (child process)
-		// tty is dropped here but we already have tty_fd as raw i32
 
 		loop {
 			match lines.next_line().await? {
@@ -86,9 +75,17 @@ impl Dds {
 	}
 }
 
+/// Parse event for initial state replay — only @cwd, skip stale @exec.
+fn parse_cmd_init(line: &str) -> Option<String> {
+	match line.split(',').next()? {
+		"@cwd" => extract_field(line, "url").map(|url| format!("cd {url}")),
+		_ => None,
+	}
+}
+
+/// Parse event for live monitoring — both @cwd and @exec.
 fn parse_cmd(line: &str) -> Option<String> {
-	let kind = line.split(',').next()?;
-	match kind {
+	match line.split(',').next()? {
 		"@cwd" => extract_field(line, "url").map(|url| format!("cd {url}")),
 		"@exec" => {
 			let cwd = extract_field(line, "cwd")?;
@@ -99,7 +96,6 @@ fn parse_cmd(line: &str) -> Option<String> {
 	}
 }
 
-/// Inject a shell command into the terminal as keystrokes via TIOCSTI.
 fn tiocsti_inject(fd: i32, cmd: &str) {
 	for &b in cmd.as_bytes().iter().chain(b"\n") {
 		unsafe {
