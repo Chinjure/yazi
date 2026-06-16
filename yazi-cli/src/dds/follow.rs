@@ -7,8 +7,8 @@ use yazi_macro::try_format;
 use crate::dds::Dds;
 
 impl Dds {
-	/// Subscribe to @cwd events and output clean directory paths for shell integration.
-	/// One path per line. Reconnects automatically if the Yazi instance restarts.
+	/// Subscribe to @cwd and @exec events and output clean directory paths and
+	/// shell commands for integration. Reconnects automatically.
 	pub(crate) async fn follow() -> Result<()> {
 		async fn connect(kinds: &HashSet<&str>) -> Result<ClientReader> {
 			let (lines, mut writer) = Stream::connect().await?;
@@ -18,7 +18,7 @@ impl Dds {
 			Ok(lines)
 		}
 
-		let kinds = HashSet::from_iter(["@cwd"]);
+		let kinds = HashSet::from_iter(["@cwd", "@exec"]);
 
 		let mut lines =
 			connect(&kinds).await.context("No running Yazi instance found. Start yazi first.")?;
@@ -26,13 +26,25 @@ impl Dds {
 		loop {
 			match lines.next_line().await? {
 				Some(line) => {
-					// Format: "@cwd,0,<sender>,{\"url\":\"/path/to/dir\"}"
-					if let Some(url) = extract_url(&line) {
-						println!("{url}");
+					if let Some(kind) = line.split(',').next() {
+						match kind {
+							"@cwd" => {
+								if let Some(url) = extract_field(&line, "url") {
+									println!("{url}");
+								}
+							}
+							"@exec" => {
+								if let (Some(cwd), Some(cmd)) =
+									(extract_field(&line, "cwd"), extract_field(&line, "cmd"))
+								{
+									println!("\x1e{cwd}\x1f{cmd}");
+								}
+							}
+							_ => {}
+						}
 					}
 				}
 				None => {
-					// Connection lost -- reconnect forever
 					loop {
 						tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 						match connect(&kinds).await {
@@ -49,17 +61,16 @@ impl Dds {
 	}
 }
 
-/// Extract the directory path from a DDS @cwd event line.
-/// Input format: "@cwd,0,1234,{"url":"/home/user/projects"}"
-fn extract_url(line: &str) -> Option<String> {
+/// Extract a JSON field value from a DDS event line.
+/// Format: "kind,receiver,sender,{...json...}"
+fn extract_field(line: &str, key: &str) -> Option<String> {
 	let body = line.splitn(4, ',').nth(3)?;
 	let json: serde_json::Value = serde_json::from_str(body).ok()?;
-	let url = json.get("url")?.as_str()?;
-	Some(url_decode(url))
+	let val = json.get(key)?.as_str()?;
+	Some(url_decode(val))
 }
 
 /// Decode percent-encoded strand URLs back to a filesystem path.
-/// If decoding fails, returns the original string unchanged.
 fn url_decode(s: &str) -> String {
 	let mut result = String::with_capacity(s.len());
 	let mut chars = s.bytes();

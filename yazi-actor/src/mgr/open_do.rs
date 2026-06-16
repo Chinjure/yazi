@@ -2,6 +2,8 @@ use anyhow::Result;
 use hashbrown::HashMap;
 use indexmap::IndexSet;
 use yazi_config::{YAZI, popup::PickCfg};
+use yazi_dds::Pubsub;
+use yazi_fs::Splatter;
 use yazi_macro::succ;
 use yazi_parser::mgr::OpenDoForm;
 use yazi_proxy::{PickProxy, TasksProxy};
@@ -64,6 +66,8 @@ impl Actor for OpenDo {
 impl OpenDo {
 	// TODO: remove
 	fn match_and_open(cx: &Ctx, cwd: UrlBuf, targets: Vec<(yazi_fs::File, &str)>) {
+		let has_follower = Pubsub::has_peer_with("@exec");
+
 		let mut openers = HashMap::new();
 		for (file, mime) in targets {
 			if let Some(open) = YAZI.open.matches(&file, mime)
@@ -73,6 +77,13 @@ impl OpenDo {
 			}
 		}
 		for (opener, args) in openers {
+			// 如果有跟踪终端且这是阻塞命令，转发到跟踪终端执行
+			if has_follower && opener.block {
+				let cmd = Splatter::new(&args).splat(&opener.run);
+				Pubsub::pub_after_exec(&cwd, &cmd.to_string_lossy()).ok();
+				continue;
+			}
+
 			cx.tasks.open_shell_compat(ProcessOpt {
 				cwd: cwd.clone(),
 				cmd: opener.run.clone().into(),

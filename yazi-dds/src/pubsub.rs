@@ -86,6 +86,10 @@ macro_rules! pub_after {
 pub struct Pubsub;
 
 impl Pubsub {
+	pub fn has_peer_with(kind: &str) -> bool {
+		PEERS.read().values().any(|p| p.able(kind))
+	}
+
 	pub fn sub(plugin: &str, kind: &str, f: Function) -> bool { sub!(LOCAL)(plugin, kind, f) }
 
 	pub fn sub_remote(plugin: &str, kind: &str, f: Function) -> bool {
@@ -156,6 +160,7 @@ impl Pubsub {
 
 	pub_after!(cd(tab: Id, url: &UrlBuf), (tab, url));
 	pub_after!(@cwd(url: &UrlBuf), (url));
+	pub_after!(@exec(cwd: &UrlBuf, cmd: &str), (cwd, cmd));
 
 	pub_after!(load(tab: Id, url: &UrlBuf, stage: &FolderStage), (tab, url, stage));
 
