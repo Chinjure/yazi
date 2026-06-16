@@ -32,6 +32,8 @@ pub(super) enum Command {
 	PubTo(CommandPubTo),
 	/// Subscribe to messages from all remote instances.
 	Sub(CommandSub),
+	/// Subscribe to CWD changes and output directory paths for shell integration.
+	Follow,
 	/// Manage the cache.
 	#[command(subcommand)]
 	Cache(CommandCache),

@@ -24,6 +24,7 @@ impl Tabs {
 
 		self.cursor = idx;
 		err!(Pubsub::pub_after_tab(self.active().id));
+		err!(Pubsub::pub_after_cwd(self.active().cwd()));
 	}
 }
 

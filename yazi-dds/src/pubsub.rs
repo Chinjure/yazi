@@ -155,6 +155,7 @@ impl Pubsub {
 	pub_after!(tab(idx: Id), (idx));
 
 	pub_after!(cd(tab: Id, url: &UrlBuf), (tab, url));
+	pub_after!(@cwd(url: &UrlBuf), (url));
 
 	pub_after!(load(tab: Id, url: &UrlBuf, stage: &FolderStage), (tab, url, stage));
 

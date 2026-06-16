@@ -106,6 +106,14 @@ async fn run() -> anyhow::Result<()> {
 			tokio::signal::ctrl_c().await?;
 		}
 
+		Command::Follow => {
+			yazi_boot::init_default();
+			yazi_dds::init();
+			dds::Dds::follow().await?;
+
+			tokio::signal::ctrl_c().await?;
+		}
+
 		Command::Cache(cmd) => {
 			yazi_tty::init();
 			yazi_config::init()?;

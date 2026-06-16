@@ -51,6 +51,7 @@ impl Actor for Cd {
 		}
 
 		err!(Pubsub::pub_after_cd(tab.id, tab.cwd()));
+		err!(Pubsub::pub_after_cwd(tab.cwd()));
 		act!(mgr:displace, cx)?;
 		act!(mgr:hidden, cx).ok();
 		act!(mgr:sort, cx).ok();

@@ -25,6 +25,7 @@ impl Actor for TabSwap {
 		tabs.cursor = new;
 
 		err!(Pubsub::pub_after_tab(cx.active().id));
+		err!(Pubsub::pub_after_cwd(cx.active().cwd()));
 		succ!(render!());
 	}
 }

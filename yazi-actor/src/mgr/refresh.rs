@@ -1,5 +1,6 @@
 use anyhow::Result;
 use yazi_core::tab::Folder;
+use yazi_boot::ARGS;
 use yazi_fs::{CWD, Files, FilesOp, cha::Cha};
 use yazi_macro::{act, succ};
 use yazi_parser::VoidForm;
@@ -36,6 +37,12 @@ impl Actor for Refresh {
 
 impl Refresh {
 	fn cwd_changed() {
+		// Update cwd-file on every CWD change, not just on exit
+		if let Some(p) = ARGS.cwd_file.as_ref() {
+			let path = CWD.path();
+			std::fs::write(p, path.as_os_str().as_encoded_bytes()).ok();
+		}
+
 		if CWD.load().kind().is_virtual() {
 			MgrProxy::watch();
 		}
